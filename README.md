@@ -2,6 +2,11 @@
 
 Servicio puente para enviar SMS con Twilio desde QRadar.
 
+## Documentacion del proyecto
+
+- Historial de versiones: [CHANGELOG.md](CHANGELOG.md)
+- Registro de pendientes: [ISSUES.md](ISSUES.md)
+
 ## Inicio rapido
 
 Si necesitas lo minimo para operar:
