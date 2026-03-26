@@ -2,6 +2,23 @@
 
 Este archivo registra cambios reales del proyecto por version.
 
+## v1.3.0 - 2026-03-26
+
+### Added
+- **Deduplicación (SMS-006)**: Motor de detección de duplicados por contenido. Si se recibe exactamente el mismo mensaje para el mismo destino dentro de una ventana de **5 minutos**, el envío se bloquea automáticamente (`DUPLICATE_REJECT`).
+- **Truncamiento Inteligente (SMS-005)**: Nueva lógica que busca y prioriza el ID de la ofensa. Si el mensaje supera los 160 caracteres, se recorta la descripción pero se intenta mantener el contexto crítico al principio.
+
+### Changed
+- Refactorizada la función de validación de seguridad `canSendSms` para integrar tanto el Rate Limit como la Deduplicación en un solo paso.
+
+## v1.2.0 - 2026-03-26
+
+### Added
+- **Auditoría de SMS (`sms-audit.log`)**: Implementado sistema de registro persistente en disco. Cada SMS enviado (HTTP/UDP), bloqueado por anti-spam o fallido se registra con timestamp, estado y destinatario.
+
+### Fixed
+- Mejorado el manejo de errores en el sistema de auditoría para prevenir bloqueos del hilo principal.
+
 ## v1.1.0 - 2026-03-26
 
 ### Added

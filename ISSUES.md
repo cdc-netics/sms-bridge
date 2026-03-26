@@ -13,10 +13,10 @@ Estado actual:
 | --- | --- | --- | --- | --- | --- |
 | SMS-001 | QRadar + Bridge | Resuelto | Dato | SMS contiene "null" literal en campo de descripcion | Corregido internamente con Regex en server.js en ambos flujos (HTTP/UDP) |
 | SMS-002 | Bridge | Pendiente | Codigo | Parseo de syslog comentado sin explicacion | Codigo legacy; decidir si reactivar o eliminar |
-| SMS-003 | Bridge | Pendiente | Logging | Sin visibilidad de mensajes entrantes (UDP) | Necesita logging estructurado para debuggeo |
+| SMS-003 | Bridge | Resuelto | Logging | Sin visibilidad de mensajes entrantes (UDP) | Implementado en v1.2.0 vía `sms-audit.log` |
 | SMS-004 | Bridge | Pendiente | Contenido | Sin validacion de contenido antes de enviar SMS | Bridge debe rechazar/filtrar datagramas invalidos |
-| SMS-005 | Bridge | Pendiente | Truncamiento | Recorte de 160 caracteres puede cortar informacion critica | Bridge debe truncar inteligentemente |
-| SMS-006 | Bridge | Pendiente | Deduplicacion | Sin control de eventos duplicados | Bridge debe deduplicar dentro de ventana temporal |
+| SMS-005 | Bridge | Resuelto | Truncamiento | Recorte de 160 caracteres puede cortar informacion critica | Implementado en v1.3.0: Prioriza Offense ID y corta descripción |
+| SMS-006 | Bridge | Resuelto | Deduplicacion | Sin control de eventos duplicados | Implementado en v1.3.0: Ventana de 5 min por contenido idéntico |
 
 ## Como se puede solucionar
 

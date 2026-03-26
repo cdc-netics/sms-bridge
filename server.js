@@ -7,151 +7,203 @@
 const express = require('express'); // Framework web ligero para manejar peticiones HTTP
 const twilio = require('twilio');   // SDK oficial de Twilio para interactuar con su API (enviar SMS)
 const dgram = require('dgram');     // Módulo nativo de Node.js para crear servidores UDP (recepción Syslog)
+const fs = require('fs');           // Módulo nativo para manejo de archivos (Auditoría)
+const path = require('path');       // Módulo nativo para manejo de rutas de archivos
+const crypto = require('crypto');   // Módulo nativo para generación de hashes (Deduplicación)
 
 // 2. Inicialización de la aplicación Express
 const app = express();
-// Definir el puerto principal del servicio. 
-// Usa la variable de entorno 'PORT' si existe, o por defecto el puerto 18180.
 const port = process.env.PORT || 18180;
 
 // 3. Configuración del cliente Twilio
-// Se crea una instancia del cliente con las credenciales obtenidas del archivo .env
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID?.trim(),
   process.env.TWILIO_AUTH_TOKEN?.trim()
 );
 
-// Obtenemos el número desde el cual se enviarán los SMS (número autorizado/comprado en Twilio)
 const TWILIO_FROM = (process.env.TWILIO_FROM || '').trim();
 
 // =========================================================================
-// SISTEMA ANTI-SPAM (RATE LIMITING)
-// Evita que un error (o 600 ofensas simultáneas) acaben con el saldo de SMS
+// SISTEMA DE AUDITORÍA (LOG EN ARCHIVO)
 // =========================================================================
-const lastSentTimestamps = new Map(); // Guarda en memoria RAM cuándo fue el último SMS por número
-// Control de tiempo en milisegundos (Por defecto 60 segundos). 
-// Permite sobreescribir con variable SMS_COOLDOWN_SECONDS en .env
-const COOLDOWN_MS = (parseInt(process.env.SMS_COOLDOWN_SECONDS, 10) || 60) * 1000;
+const LOG_FILE = path.join(__dirname, 'sms-audit.log');
 
-function canSendSms(toNumber) {
+function writeAuditLog(status, to, body) {
+  try {
+    const timestamp = new Date().toISOString().replace('T', ' ').split('.')[0];
+    const cleanBody = (body || '').replace(/\n|\r/g, ' ').substring(0, 50);
+    const logLine = `[${timestamp}] [${status.padEnd(12)}] [TO: ${to.padEnd(15)}] [MSG: ${cleanBody}...]\n`;
+    fs.appendFile(LOG_FILE, logLine, (err) => {
+      if (err) console.error('Error escribiendo en sms-audit.log:', err.message);
+    });
+  } catch (e) {
+    console.error('Error en el sistema de auditoría:', e.message);
+  }
+}
+
+// =========================================================================
+// SISTEMA ANTI-SPAM Y DEDUPLICACIÓN (SMS-006)
+// =========================================================================
+const lastSentTimestamps = new Map(); 
+const recentMessages = new Map(); // Mapa para detectar duplicados por contenido
+const COOLDOWN_MS = (parseInt(process.env.SMS_COOLDOWN_SECONDS, 10) || 60) * 1000;
+const DEDUPLICATION_WINDOW_MS = 5 * 60 * 1000; // 5 minutos para el mismo mensaje
+
+function canSendSms(toNumber, content) {
   const now = Date.now();
-  const lastTime = lastSentTimestamps.get(toNumber) || 0;
   
-  if (now - lastTime < COOLDOWN_MS) {
-    return false; // Está en enfriamiento, BLOQUEAMOS el SMS
+  // 1. Límite de ráfaga (Anti-Spam general por número)
+  const lastTime = lastSentTimestamps.get(toNumber) || 0;
+  if (now - lastTime < COOLDOWN_MS) return { allowed: false, reason: 'RATE_LIMIT' };
+
+  // 2. Deduplicación por contenido (SMS-006)
+  // Normalizamos el contenido (quitamos espacios extra) para el hash
+  const normalizedContent = (content || '').trim().toLowerCase();
+  const msgHash = crypto.createHash('md5').update(toNumber + normalizedContent).digest('hex');
+  const lastMsgTime = recentMessages.get(msgHash) || 0;
+  
+  if (now - lastMsgTime < DEDUPLICATION_WINDOW_MS) {
+    return { allowed: false, reason: 'DUPLICATE' };
   }
   
-  // Si ya pasó el tiempo, actualizamos la fecha del último envío y AUTORIZAMOS
+  // Si pasa ambos filtros, actualizamos tiempos y autorizamos
   lastSentTimestamps.set(toNumber, now);
-  return true;
+  recentMessages.set(msgHash, now);
+  
+  // Limpieza periódica automática del mapa de duplicados para no saturar la RAM
+  if (recentMessages.size > 1000) recentMessages.clear();
+
+  return { allowed: true };
+}
+
+// =========================================================================
+// TRUNCAMIENTO INTELIGENTE (SMS-005)
+// Prioriza la información crítica de QRadar (ID de Ofensa)
+// =========================================================================
+function smartTruncate(text, maxLength = 160) {
+  if (!text || text.length <= maxLength) return text;
+
+  // Intentamos detectar el ID de la ofensa (ej: "Offense 123" o "ID:123")
+  const offenseMatch = text.match(/(Offense\s*(ID:)?\s*\d+)/i);
+  const offenseInfo = offenseMatch ? offenseMatch[0] : "";
+  
+  // Reservamos espacio para el ID de la ofensa al principio si existe
+  let result = "";
+  if (offenseInfo && !text.startsWith(offenseInfo)) {
+     result = offenseInfo + " | ";
+  }
+
+  // Rellenamos con el inicio del texto original hasta completar el límite
+  const remainingSpace = maxLength - result.length - 3; // -3 para los puntos suspensivos
+  result += text.substring(0, remainingSpace);
+  
+  return result.trim() + "...";
 }
 
 
 // 4. Configuración del Servidor HTTP (Express)
-// Permitimos que nuestra aplicación interprete e ingrese cuerpos (body) en formato JSON.
 app.use(express.json({ limit: '2kb' }));
 
-// --- ENDPOINT DE SALUD (Healthcheck) ---
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-// --- ENDPOINT PRINCIPAL (Para integraciones con "Custom Actions" de QRadar) ---
 app.post('/sms', async (req, res) => {
   try {
-    // Extraemos el número de destino (to) y el texto (body) desde el JSON enviado por QRadar
     let { to, body } = req.body || {};
 
-    // --- FIX SMS-001 ---
-    // Si QRadar envía un literal "null" en la descripción, lo hacemos legible
+    // Fix SMS-001 (Null strings)
     if (typeof body === 'string') {
       body = body.replace(/\bnull\b/ig, '[sin descripción]');
     }
     
-    if (!to || !body) throw new Error('Faltan parámetros requeridos en el JSON: "to" o "body"');
+    if (!to || !body) throw new Error('Faltan parámetros requeridos');
     
-    // --- CONTROL ANTI-SPAM ---
-    if (!canSendSms(to)) {
-      console.warn(`[ANTI-SPAM HTTP] Bloqueado envío al número ${to}. Cientos de eventos agrupados (Enfriamiento activo)`);
-      // Retornamos OK false para no caer pero evitamos enviar a Twilio
-      return res.json({ ok: false, notice: 'Rate limit (Anti-spam) activo para este número.' });
+    // --- CONTROL DE SEGURIDAD (Anti-Spam & Deduplicación) ---
+    const check = canSendSms(to, body);
+    if (!check.allowed) {
+      console.warn(`[SEGURIDAD HTTP] Bloqueado envío a ${to}. Razón: ${check.reason}`);
+      writeAuditLog(check.reason === 'DUPLICATE' ? 'DUPLICATE' : 'SPAM_BLOCK', to, body);
+      return res.json({ ok: false, error: `Control de seguridad activo: ${check.reason}` });
     }
 
-    // Llamada asíncrona a la API de Twilio para crear y enviar el SMS
+    // --- TRUNCAMIENTO INTELIGENTE (SMS-005) ---
+    const finalBody = smartTruncate(body);
+
     await client.messages.create({ 
       to: to,               
       from: TWILIO_FROM,    
-      body: body            
+      body: finalBody            
     });
     
+    writeAuditLog('SENT_OK', to, finalBody);
     res.json({ ok: true });
   } catch (e) {
     console.error('ERROR en endpoint /sms ->', e.message);
+    writeAuditLog('ERROR_HTTP', req.body?.to || 'unknown', e.message);
     res.status(400).json({ ok: false, error: e.message });
   }
 });
 
-app.listen(port, () => console.log(`Servidor HTTP (Express) arrancando y escuchando peticiones en el puerto ${port}`));
+app.listen(port, () => console.log(`Servidor escuchando en puerto ${port}`));
 
 
 // =========================================================================
-// 5. SERVIDOR UDP (Para recepción de logs crudos tipo Syslog desde QRadar)
+// 5. SERVIDOR UDP (Syslog QRadar)
 // =========================================================================
 const udpServer = dgram.createSocket('udp4');
 
 udpServer.on('error', (err) => {
-  console.error(`Error crítico en el socket UDP:\n${err.stack}`);
+  console.error(`Error UDP:\n${err.stack}`);
   udpServer.close();
 });
 
-// --- Array Dinámico de Destinatarios (Modo UDP) ---
-// Extrae de las variables .env todas aquellas "TWILIO_TO1", "TWILIO_TO2", etc.
 const TO_NUMBERS = Object.keys(process.env)
   .filter(key => key.startsWith('TWILIO_TO') && key !== 'TWILIO_TO')
   .map(key => process.env[key]?.trim()) 
   .filter(Boolean);
 
-// Evento que se dispara cada vez que llega un "datagrama" (mensaje crudo Syslog UDP)
 udpServer.on('message', async (msg, rinfo) => {
   try {
     let log = msg.toString();
     if (!log) return;
 
-    // --- FIX SMS-001 ---
-    // Si QRadar envía un literal "null" en el payload UDP, lo hacemos legible
+    // Fix SMS-001
     log = log.replace(/\bnull\b/ig, '[sin descripción]');
 
-    // Límite celular
-    if (log.length > 160) log = log.substring(0, 157) + '...';
-    if (!log) return;
-
-    // Recorremos todos los números destino encontrados
+    // Recorremos destinatarios
     for (const to of TO_NUMBERS) {
-      // --- CONTROL ANTI-SPAM ---
-      if (!canSendSms(to)) {
-        console.warn(`[ANTI-SPAM UDP] Alerta retenida hacia ${to}. Límite de ráfaga alcanzado.`);
-        continue; // Saltamos este número y seguimos procesando los demás
+      // --- CONTROL DE SEGURIDAD (Anti-Spam & Deduplicación) ---
+      const check = canSendSms(to, log);
+      if (!check.allowed) {
+        console.warn(`[SEGURIDAD UDP] Bloqueado envío a ${to}. Razón: ${check.reason}`);
+        writeAuditLog(check.reason === 'DUPLICATE' ? 'DUPLICATE' : 'SPAM_BLOCK', to, log);
+        continue; 
       }
+
+      // --- TRUNCAMIENTO INTELIGENTE (SMS-005) ---
+      const finalLog = smartTruncate(log);
 
       try {
         await client.messages.create({
-          to: to,
+          to,
           from: TWILIO_FROM,
-          body: log
+          body: finalLog
         });
-        console.log(`Mensaje UDP reenviado exitosamente a ${to}`);
+        console.log(`Mensaje UDP OK a ${to}`);
+        writeAuditLog('SENT_UDP', to, finalLog);
       } catch (e) {
-        console.error(`ERROR al intentar enviar SMS UDP a ${to} ->`, e.message);
+        console.error(`ERROR UDP a ${to} ->`, e.message);
+        writeAuditLog('ERROR_UDP', to, e.message);
       }
     }
 
   } catch (e) {
-    console.error('ERROR general al procesar mensaje entrante UDP ->', e.message);
+    console.error('ERROR UDP general ->', e.message);
   }
 });
 
 udpServer.on('listening', () => {
   const address = udpServer.address();
-  console.log(`Servidor UDP (Syslog listener) operando en ${address.address}:${address.port}`);
+  console.log(`Escuchando UDP en ${address.address}:${address.port}`);
 });
 
-// Finalmente, indicamos al servidor UDP que escuche en el mismo puerto que el HTTP
 udpServer.bind(port);

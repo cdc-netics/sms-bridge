@@ -23,9 +23,9 @@ Tip:
 ## Que hace este proyecto
 
 - Recibe alertas por HTTP en `/sms`.
-- Envia SMS usando Twilio.
+- Envia SMS usando Twilio con **truncamiento inteligente** (prioriza Offense ID).
 - Expone `/health` para validacion de estado.
-- Tambien puede reenviar mensajes recibidos por UDP a una lista fija de numeros.
+- Reenvía mensajes UDP con **deduplicación automática** (evita mensajes idénticos en 5 min).
 
 ## Para que lo usamos
 
@@ -56,6 +56,7 @@ Variables clave:
 - `TWILIO_AUTH_TOKEN`
 - `TWILIO_FROM`
 - `PORT` (default `18180`)
+- `SMS_COOLDOWN_SECONDS` (Límite de SMS: segundos de espera entre envíos, defecto `60`)
 
 Variables opcionales para UDP:
 
@@ -98,6 +99,7 @@ TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWILIO_AUTH_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWILIO_FROM=+1XXXXXXXXXX
 PORT=18180
+SMS_COOLDOWN_SECONDS=60
 EOF
 
 sudo chmod 600 /opt/sms-bridge/.env
@@ -427,6 +429,42 @@ curl -s -u "$TWILIO_ACCOUNT_SID:$TWILIO_AUTH_TOKEN" \
 sudo podman logs -f sms-bridge
 ss -ltnp | grep 18180
 ```
+
+## Comandos Técnicos de Podman (Diagnóstico)
+
+Para revisar el estado interno del contenedor en QRadar:
+
+```bash
+# Ver estado y puertos activos
+sudo podman ps -a --filter name=sms-bridge
+
+# Ver logs en tiempo real
+sudo podman logs -f sms-bridge
+
+# Verificar variables de entorno cargadas
+sudo podman inspect sms-bridge --format '{{.Config.Env}}' | tr ' ' '\n' | grep TWILIO
+```
+
+## Verificación Post-Actualización
+
+Sigue estos pasos tras cada `git pull` y reinicio:
+
+1. **Check Status**: `sudo systemctl status container-sms-bridge.service`
+2. **Check Health**: `curl -s http://127.0.0.1:18180/health`
+3. **Check Logs**: Busca el mensaje `[ANTI-SPAM]` en los logs de Podman si intentas enviar más de un SMS al mismo número en menos de un minuto.
+4. **Audit Log**: Verifica que se esté escribiendo el archivo `tail -f /opt/sms-bridge/sms-audit.log`.
+
+---
+
+## Registro de Auditoría Local
+
+El archivo **`sms-audit.log`** es tu fuente de verdad para saber qué salió del bridge. A diferencia de `podman logs`, este archivo persiste aunque borres el contenedor y sólo contiene el historial de envíos.
+
+```bash
+# Ver últimos 20 envíos de la historia
+tail -n 20 /opt/sms-bridge/sms-audit.log
+```
+
 
 ## Resumen final
 
