@@ -11,7 +11,7 @@ Estado actual:
 
 | ID  | Solucion | Estado | Seccion | Tarea | Notas |
 | --- | --- | --- | --- | --- | --- |
-| SMS-001 | QRadar + Bridge | Pendiente | Dato | SMS contiene "null" literal en campo de descripcion | QRadar envia null -> corregi en eventos; Bridge detecta y reemplaza "null" |
+| SMS-001 | QRadar + Bridge | Resuelto | Dato | SMS contiene "null" literal en campo de descripcion | Corregido internamente con Regex en server.js en ambos flujos (HTTP/UDP) |
 | SMS-002 | Bridge | Pendiente | Codigo | Parseo de syslog comentado sin explicacion | Codigo legacy; decidir si reactivar o eliminar |
 | SMS-003 | Bridge | Pendiente | Logging | Sin visibilidad de mensajes entrantes (UDP) | Necesita logging estructurado para debuggeo |
 | SMS-004 | Bridge | Pendiente | Contenido | Sin validacion de contenido antes de enviar SMS | Bridge debe rechazar/filtrar datagramas invalidos |
