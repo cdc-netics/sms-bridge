@@ -117,6 +117,11 @@ app.post('/sms', async (req, res) => {
     
     if (!to || !body) throw new Error('Faltan parámetros requeridos');
     
+    // Sanitizamos el número (quitamos comentarios tipo #Nombre o espacios)
+    if (typeof to === 'string') {
+      to = to.split(/[\s#]/)[0].replace(/[^+\d]/g, '');
+    }
+    
     // --- CONTROL DE SEGURIDAD (Anti-Spam & Deduplicación) ---
     const check = canSendSms(to, body);
     if (!check.allowed) {
@@ -158,7 +163,11 @@ udpServer.on('error', (err) => {
 
 const TO_NUMBERS = Object.keys(process.env)
   .filter(key => key.startsWith('TWILIO_TO') && key !== 'TWILIO_TO')
-  .map(key => process.env[key]?.trim()) 
+  .map(key => {
+    const val = process.env[key]?.trim() || '';
+    // Tomamos solo la parte antes de un espacio o # y limpiamos caracteres extra
+    return val.split(/[\s#]/)[0].replace(/[^+\d]/g, '');
+  }) 
   .filter(Boolean);
 
 udpServer.on('message', async (msg, rinfo) => {

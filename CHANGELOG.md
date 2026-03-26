@@ -7,6 +7,7 @@ Este archivo registra cambios reales del proyecto por version.
 ### Added
 - **Deduplicación (SMS-006)**: Motor de detección de duplicados por contenido. Si se recibe exactamente el mismo mensaje para el mismo destino dentro de una ventana de **5 minutos**, el envío se bloquea automáticamente (`DUPLICATE_REJECT`).
 - **Truncamiento Inteligente (SMS-005)**: Nueva lógica que busca y prioriza el ID de la ofensa. Si el mensaje supera los 160 caracteres, se recorta la descripción pero se intenta mantener el contexto crítico al principio.
+- **Sanitización de Teléfonos**: Ahora puedes poner comentarios en el `.env` (ej: `TWILIO_TO1=+569... #Nombre`) y el sistema limpiará automáticamente el nombre antes de enviar el SMS.
 
 ### Changed
 - Refactorizada la función de validación de seguridad `canSendSms` para integrar tanto el Rate Limit como la Deduplicación en un solo paso.
