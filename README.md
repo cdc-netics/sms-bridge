@@ -152,7 +152,19 @@ curl -sS -X POST http://127.0.0.1:18180/sms \
 sudo systemctl restart container-sms-bridge.service
 ```
 
-### Caso B: actualizar codigo (`server.js`, `package.json`)
+### Caso B: actualizar tu servidor QRadar desde Git (Recomendado)
+
+Si tienes tu proyecto enlazado a un repositorio remoto, simplemente usa Git para traer los cambios al servidor (`git pull`) y reinicia el contenedor (Podman se encargará de montar los archivos modificados instantáneamente).
+
+> **Nota:** Como el archivo `.env` que tiene cosas reales está ignorado y excluido por seguridad en el `.gitignore`, un `git pull` **no** va a actualizar tus contraseñas y teléfonos dinámicos. Si agregaste nuevas variables (ej. `SMS_COOLDOWN_SECONDS`), deberás agregarlas a mano en `/opt/sms-bridge/.env` antes de reiniciar.
+
+```bash
+cd /opt/sms-bridge
+git pull  o   git pull origin main
+sudo systemctl restart container-sms-bridge.service
+```
+
+### Caso C: actualizar codigo manualmente (`server.js`, `package.json`)
 
 1. Copiar archivos nuevos a `/opt/sms-bridge/`.
 2. Reinstalar dependencias (si cambió `package.json`).
@@ -167,7 +179,7 @@ sudo podman run --rm -it --user 0 \
 sudo systemctl restart container-sms-bridge.service
 ```
 
-### Caso C: recrear contenedor por cambio base
+### Caso D: recrear contenedor por cambio base
 
 ```bash
 sudo systemctl stop container-sms-bridge.service
