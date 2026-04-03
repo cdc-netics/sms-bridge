@@ -58,6 +58,34 @@ Variables clave:
 - `PORT` (default `18180`)
 - `SMS_COOLDOWN_SECONDS` (Límite de SMS: segundos de espera entre envíos, defecto `60`)
 
+### Variables de Control de Horario Hábil (SMS-007)
+
+Si quieres **bloquear SMS durante horario de oficina** y permitirlos solo fuera de ese horario:
+
+- `BUSINESS_TIMEZONE` (default `America/Santiago`): Zona horaria IANA para validar hora local
+- `BUSINESS_DAYS` (default `1,2,3,4,5`): Días hábiles formato 0-6 (0=domingo, 6=sábado)
+- `BUSINESS_HOURS_START` (default `09:00`): Inicio horario hábil (HH:MM)
+- `BUSINESS_HOURS_END` (default `18:00`): Fin horario hábil (HH:MM)
+- `SMS_SEND_ONLY_OUTSIDE_BUSINESS_HOURS` (default `true`): true=bloquear en horario hábil, false=permitir siempre
+
+**Comportamiento:**
+- Bloquea SMS lunes-viernes entre 09:00-18:00 (estado auditoría: `BUSINESS_HOURS_BLOCK`)
+- Permite siempre en sábados, domingos y feriados
+- Los feriados se cargan desde `config/holidays/<año>.txt` (ej: `config/holidays/2026.txt`)
+- Formato de feriados: Una fecha YYYY-MM-DD por línea
+
+### Variables de Recordatorio de Feriados (SMS-008)
+
+Si quieres **recordatorio automático** para preparar feriados del año siguiente:
+
+- `HOLIDAY_REMINDER_ENABLED` (default `true`): Activar recordatorio del 25-31 diciembre
+- `HOLIDAY_REMINDER_DAYS_AHEAD` (default `7`): Días de anticipación (reservado para mejoras futuras)
+
+**Comportamiento:**
+- Del 25-31 de diciembre, verifica si existe `config/holidays/<año+1>.txt`
+- Si el archivo falta o está vacío, envía SMS recordatorio automático (máximo una vez por día)
+- Registra en auditoría con estado: `HOLIDAY_FILE_REMINDER`
+
 Variables opcionales para UDP:
 
 - `TWILIO_TO1` a `TWILIO_TO5`
@@ -65,13 +93,84 @@ Variables opcionales para UDP:
 Ejemplo de `.env` (solo referencia, no usar valores reales en Git):
 
 ```bash
+# Credenciales Twilio (requerido)
 TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWILIO_AUTH_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWILIO_FROM=+1XXXXXXXXXX
+
+# Servidor y seguridad
 PORT=18180
+SMS_COOLDOWN_SECONDS=60
+
+# Destinatarios UDP
 TWILIO_TO1=+56XXXXXXXXX
 TWILIO_TO2=+56YYYYYYYYY
+
+# SMS-007: Control horario hábil y feriados
+BUSINESS_TIMEZONE=America/Santiago
+BUSINESS_DAYS=1,2,3,4,5
+BUSINESS_HOURS_START=09:00
+BUSINESS_HOURS_END=18:00
+SMS_SEND_ONLY_OUTSIDE_BUSINESS_HOURS=true
+
+# SMS-008: Recordatorio feriados año siguiente
+HOLIDAY_REMINDER_ENABLED=true
+HOLIDAY_REMINDER_DAYS_AHEAD=7
 ```
+
+**Nota:** Los feriados se definen en archivos bajo `config/holidays/<año>.txt`. Ejemplo: `config/holidays/2026.txt` con formato YYYY-MM-DD (una fecha por línea).
+
+### Bloques exactos para prueba en desarrollo
+
+Si quieres probar el comportamiento sin cambiar la hora del sistema, puedes modificar temporalmente las variables de horario en el `.env` del ambiente de desarrollo y reiniciar el servicio.
+
+#### Caso 1: Bloquear todo envio en dia habil
+
+Usa este bloque si quieres verificar que el bridge **no envie SMS**. Mientras el dia actual sea lunes a viernes y no sea feriado, cualquier intento de envio debe quedar bloqueado con estado `BUSINESS_HOURS_BLOCK`.
+
+```bash
+BUSINESS_TIMEZONE=America/Santiago
+BUSINESS_DAYS=1,2,3,4,5
+BUSINESS_HOURS_START=00:00
+BUSINESS_HOURS_END=23:59
+SMS_SEND_ONLY_OUTSIDE_BUSINESS_HOURS=true
+```
+
+#### Caso 2: Permitir todo envio
+
+Usa este bloque si quieres verificar que el bridge **si envie SMS** sin restriccion por horario habil.
+
+```bash
+BUSINESS_TIMEZONE=America/Santiago
+BUSINESS_DAYS=1,2,3,4,5
+BUSINESS_HOURS_START=09:00
+BUSINESS_HOURS_END=18:00
+SMS_SEND_ONLY_OUTSIDE_BUSINESS_HOURS=false
+```
+
+#### Caso 3: Volver a configuracion operativa recomendada
+
+Este es el bloque recomendado para operacion normal.
+
+```bash
+BUSINESS_TIMEZONE=America/Santiago
+BUSINESS_DAYS=1,2,3,4,5
+BUSINESS_HOURS_START=09:00
+BUSINESS_HOURS_END=18:00
+SMS_SEND_ONLY_OUTSIDE_BUSINESS_HOURS=true
+```
+
+#### Como validar el resultado
+
+- Edita el `.env` del ambiente donde corre el servicio.
+- Reinicia el servicio para recargar variables.
+- Genera un evento de prueba desde tu flujo normal de desarrollo o desde la herramienta que ya usas.
+- Revisa `sms-audit.log`.
+
+Resultado esperado:
+- Si el bloqueo aplica, verás `BUSINESS_HOURS_BLOCK` y no `SENT_OK`.
+- Si el envio está permitido, verás `SENT_OK`.
+- Si el dia actual es sábado, domingo o feriado cargado en `config/holidays/<año>.txt`, el bridge permitirá el envio aunque el horario coincida con la ventana hábil.
 
 ## Levantar todo desde cero (QRadar + Podman + systemd)
 

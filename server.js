@@ -77,6 +77,192 @@ function canSendSms(toNumber, content) {
 }
 
 // =========================================================================
+// MANEJO DE FERIADOS Y HORARIO HÁBIL (SMS-007 y SMS-008)
+// =========================================================================
+
+// Variables de configuración por entorno (SMS-007)
+const BUSINESS_TIMEZONE = (process.env.BUSINESS_TIMEZONE || 'America/Santiago').trim();
+const BUSINESS_DAYS = (process.env.BUSINESS_DAYS || '1,2,3,4,5').split(',').map(Number); // 0=domingo, 6=sábado
+const BUSINESS_HOURS_START = (process.env.BUSINESS_HOURS_START || '09:00').trim(); // HH:MM
+const BUSINESS_HOURS_END = (process.env.BUSINESS_HOURS_END || '18:00').trim(); // HH:MM
+const SMS_SEND_ONLY_OUTSIDE_BUSINESS_HOURS = (process.env.SMS_SEND_ONLY_OUTSIDE_BUSINESS_HOURS || 'true').toLowerCase() === 'true';
+
+// Variables para recordatorio de feriados (SMS-008)
+const HOLIDAY_REMINDER_ENABLED = (process.env.HOLIDAY_REMINDER_ENABLED || 'true').toLowerCase() === 'true';
+const HOLIDAY_REMINDER_DAYS_AHEAD = parseInt(process.env.HOLIDAY_REMINDER_DAYS_AHEAD, 10) || 7;
+const HOLIDAYS_DIR = path.join(__dirname, 'config', 'holidays');
+
+// Estado para evitar spam en recordatorios (SMS-008)
+const lastHolidayReminderDate = new Map();
+
+// CACHÉ de feriados para evitar lectura repetida de disco (PERFORMANCE)
+const holidaysCache = new Map(); // { year -> Set }
+
+/**
+ * Obtiene feriados del caché o los carga desde disco
+ */
+function getHolidaysWithCache(year) {
+  if (holidaysCache.has(year)) {
+    return holidaysCache.get(year);
+  }
+  const holidays = loadHolidays(year);
+  holidaysCache.set(year, holidays);
+  return holidays;
+}
+
+// Validación de variables de configuración (SMS-007)
+function validateBusinessConfig() {
+  const timeFormatRegex = /^([0-1]?\d|2[0-3]):([0-5]\d)$/;
+  
+  if (!timeFormatRegex.test(BUSINESS_HOURS_START)) {
+    throw new Error(`BUSINESS_HOURS_START inválido: "${BUSINESS_HOURS_START}". Formato esperado: HH:MM (00:00-23:59)`);
+  }
+  if (!timeFormatRegex.test(BUSINESS_HOURS_END)) {
+    throw new Error(`BUSINESS_HOURS_END inválido: "${BUSINESS_HOURS_END}". Formato esperado: HH:MM (00:00-23:59)`);
+  }
+  
+  const businessDaysArray = BUSINESS_DAYS.filter(d => typeof d === 'number');
+  if (businessDaysArray.some(d => d < 0 || d > 6)) {
+    throw new Error(`BUSINESS_DAYS debe contener solo números 0-6 (0=domingo, 6=sábado). Actual: ${process.env.BUSINESS_DAYS}`);
+  }
+  
+  console.log('[STARTUP] Configuración de horario hábil validada correctamente');
+}
+
+// Ejecutar validación al iniciar
+try {
+  validateBusinessConfig();
+} catch (err) {
+  console.error('[STARTUP ERROR]', err.message);
+  process.exit(1);
+}
+
+/**
+ * Carga los feriados para un año específico desde archivo config/holidays/<año>.txt
+ */
+function loadHolidays(year) {
+  const holidayFile = path.join(HOLIDAYS_DIR, `${year}.txt`);
+  const holidays = new Set();
+  try {
+    if (fs.existsSync(holidayFile)) {
+      const content = fs.readFileSync(holidayFile, 'utf-8');
+      content.split('\n').forEach(line => {
+        const trimmed = line.trim();
+        if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) holidays.add(trimmed);
+      });
+    }
+  } catch (err) {
+    console.error(`Error cargando feriados para ${year}:`, err.message);
+  }
+  return holidays;
+}
+
+/**
+ * Obtiene la fecha actual en la zona horaria configurada (YYYY-MM-DD)
+ */
+function getLocalDateString(timezone = BUSINESS_TIMEZONE) {
+  try {
+    const formatter = new Intl.DateTimeFormat('es-CL', {
+      year: 'numeric', month: '2-digit', day: '2-digit', timeZone: timezone
+    });
+    const parts = formatter.formatToParts(new Date());
+    const year = parts.find(p => p.type === 'year')?.value;
+    const month = parts.find(p => p.type === 'month')?.value;
+    const day = parts.find(p => p.type === 'day')?.value;
+    if (!year || !month || !day) {
+      throw new Error('formatToParts falló - partes faltantes');
+    }
+    return `${year}-${month}-${day}`;
+  } catch (err) {
+    console.error('Error al obtener fecha local:', err.message);
+    return new Date().toISOString().split('T')[0];
+  }
+}
+
+/**
+ * Obtiene hora local en formato HH:MM
+ */
+function getLocalTimeString(timezone = BUSINESS_TIMEZONE) {
+  try {
+    const formatter = new Intl.DateTimeFormat('es-CL', {
+      hour: '2-digit', minute: '2-digit', hour12: false, timeZone: timezone
+    });
+    return formatter.format(new Date());
+  } catch (err) {
+    const now = new Date();
+    return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  }
+}
+
+/**
+ * Verifica si la hora actual es horario hábil (SMS-007)
+ * Retorna true si es horario hábil (bloquear), false si está fuera (permitir)
+ */
+function isBusinessHours() {
+  if (!SMS_SEND_ONLY_OUTSIDE_BUSINESS_HOURS) return false;
+  try {
+    const formatter = new Intl.DateTimeFormat('es-CL', {
+      weekday: 'numeric', timeZone: BUSINESS_TIMEZONE
+    });
+    const intlDay = parseInt(formatter.format(new Date()));
+    const dayOfWeek = intlDay === 7 ? 0 : intlDay;
+    const dateStr = getLocalDateString();
+    const currentYear = parseInt(dateStr.split('-')[0]);
+    const holidays = getHolidaysWithCache(currentYear); // ← Usa caché
+    if (holidays.has(dateStr)) return false;
+    if (!BUSINESS_DAYS.includes(dayOfWeek)) return false;
+    const currentTime = getLocalTimeString();
+    const [currentHH, currentMM] = currentTime.split(':').map(Number);
+    const [startHH, startMM] = BUSINESS_HOURS_START.split(':').map(Number);
+    const [endHH, endMM] = BUSINESS_HOURS_END.split(':').map(Number);
+    const currentMinutes = currentHH * 60 + currentMM;
+    const startMinutes = startHH * 60 + startMM;
+    const endMinutes = endHH * 60 + endMM;
+    return currentMinutes >= startMinutes && currentMinutes < endMinutes;
+  } catch (err) {
+    console.error('Error verificando horario hábil:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Verifica si debe enviar recordatorio de feriados (SMS-008)
+ */
+function shouldSendHolidayReminder() {
+  if (!HOLIDAY_REMINDER_ENABLED) return false;
+  try {
+    const today = getLocalDateString();
+    const [year, month, day] = today.split('-').map(Number);
+    if (month !== 12 || day < 25) return false;
+    const nextYear = year + 1;
+    const holidayFile = path.join(HOLIDAYS_DIR, `${nextYear}.txt`);
+    const reminderKey = `${nextYear}-reminder`;
+    if (lastHolidayReminderDate.get(reminderKey) === today) return false;
+    if (!fs.existsSync(holidayFile)) return true;
+    const content = fs.readFileSync(holidayFile, 'utf-8').trim();
+    return !content || content.split('\n').every(line => !line.trim());
+  } catch (err) {
+    console.error('Error verificando recordatorio:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Marca que se envió recordatorio hoy
+ */
+function markHolidayReminderSentToday() {
+  try {
+    const today = getLocalDateString();
+    const [year] = today.split('-').map(Number);
+    lastHolidayReminderDate.set(`${year + 1}-reminder`, today);
+    return true;
+  } catch (err) {
+    console.error('Error marcando recordatorio:', err.message);
+    return false;
+  }
+}
+
+// =========================================================================
 // TRUNCAMIENTO INTELIGENTE (SMS-005)
 // Prioriza la información crítica de QRadar (ID de Ofensa)
 // =========================================================================
@@ -122,6 +308,13 @@ app.post('/sms', async (req, res) => {
       to = to.split(/[\s#]/)[0].replace(/[^+\d]/g, '');
     }
     
+    // --- VALIDACIÓN DE HORARIO HÁBIL (SMS-007) ---
+    if (isBusinessHours()) {
+      console.warn(`[HORARIO HÁBIL] Bloqueado envío a ${to}. Hora actual es horario hábil.`);
+      writeAuditLog('BUSINESS_HOURS_BLOCK', to, body);
+      return res.json({ ok: false, error: 'SMS bloqueado: está dentro del horario hábil' });
+    }
+
     // --- CONTROL DE SEGURIDAD (Anti-Spam & Deduplicación) ---
     const check = canSendSms(to, body);
     if (!check.allowed) {
@@ -140,6 +333,28 @@ app.post('/sms', async (req, res) => {
     });
     
     writeAuditLog('SENT_OK', to, finalBody);
+    
+    // --- RECORDATORIO DE FERIADOS (SMS-008) ---
+    // Ejecutar en background sin bloquear la respuesta
+    if (shouldSendHolidayReminder()) {
+      markHolidayReminderSentToday(); // Marcar ANTES para evitar race condition
+      setImmediate(async () => {
+        try {
+          const nextYear = parseInt(getLocalDateString().split('-')[0]) + 1;
+          const reminderMsg = `[RECORDATORIO] Faltan feriados para ${nextYear}. Por favor, cargar config/holidays/${nextYear}.txt`;
+          await client.messages.create({ 
+            to: to,               
+            from: TWILIO_FROM,    
+            body: reminderMsg            
+          });
+          writeAuditLog('HOLIDAY_FILE_REMINDER', to, reminderMsg);
+          console.log(`Recordatorio de feriados enviado a ${to}`);
+        } catch (err) {
+          console.error('Error enviando recordatorio de feriados:', err.message);
+        }
+      });
+    }
+    
     res.json({ ok: true });
   } catch (e) {
     console.error('ERROR en endpoint /sms ->', e.message);
@@ -180,6 +395,13 @@ udpServer.on('message', async (msg, rinfo) => {
 
     // Recorremos destinatarios
     for (const to of TO_NUMBERS) {
+      // --- VALIDACIÓN DE HORARIO HÁBIL (SMS-007) ---
+      if (isBusinessHours()) {
+        console.warn(`[HORARIO HÁBIL] Bloqueado envío UDP a ${to}. Hora actual es horario hábil.`);
+        writeAuditLog('BUSINESS_HOURS_BLOCK', to, log);
+        continue;
+      }
+
       // --- CONTROL DE SEGURIDAD (Anti-Spam & Deduplicación) ---
       const check = canSendSms(to, log);
       if (!check.allowed) {
@@ -199,6 +421,27 @@ udpServer.on('message', async (msg, rinfo) => {
         });
         console.log(`Mensaje UDP OK a ${to}`);
         writeAuditLog('SENT_UDP', to, finalLog);
+        
+        // --- RECORDATORIO DE FERIADOS (SMS-008) ---
+        // Ejecutar en background sin bloquear otros envíos
+        if (shouldSendHolidayReminder()) {
+          markHolidayReminderSentToday(); // Marcar ANTES para evitar race condition
+          setImmediate(async () => {
+            try {
+              const nextYear = parseInt(getLocalDateString().split('-')[0]) + 1;
+              const reminderMsg = `[RECORDATORIO] Faltan feriados para ${nextYear}. Por favor, cargar config/holidays/${nextYear}.txt`;
+              await client.messages.create({ 
+                to,               
+                from: TWILIO_FROM,    
+                body: reminderMsg            
+              });
+              writeAuditLog('HOLIDAY_FILE_REMINDER', to, reminderMsg);
+              console.log(`Recordatorio de feriados enviado a ${to}`);
+            } catch (err) {
+              console.error('Error enviando recordatorio de feriados:', err.message);
+            }
+          });
+        }
       } catch (e) {
         console.error(`ERROR UDP a ${to} ->`, e.message);
         writeAuditLog('ERROR_UDP', to, e.message);
