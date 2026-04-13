@@ -20,6 +20,38 @@ Tip:
 
 - Puedes partir desde `.env.example` y copiarlo como `.env`.
 
+## Comandos del proyecto para probar el bridge
+
+Si quieres probar el bridge usando comandos propios del proyecto y no herramientas externas, usa estos scripts npm:
+
+```bash
+npm run bridge:health
+npm run bridge:sms:test -- --to +56912345678 --body "Prueba SMS bridge"
+npm run bridge:sms:test
+```
+
+Notas:
+
+- `bridge:health` valida que el servicio responda `status: ok`.
+- `bridge:sms:test` usa el endpoint real del bridge, pero encapsulado como comando del proyecto.
+- Si no envías `--body`, usa `Prueba SMS bridge` por defecto.
+- Si no envías `--to`, intenta usar `SMS_TEST_TO` y luego los `TWILIO_TO1..TWILIO_TOn` definidos en `.env`.
+- Si el bridge no está en `http://127.0.0.1:18180`, puedes definir `SMS_BRIDGE_URL`.
+- Si quieres apuntar a otro archivo de entorno, puedes definir `SMS_BRIDGE_ENV_FILE`.
+
+Ejemplos:
+
+```bash
+SMS_TEST_TO=+56912345678 npm run bridge:sms:test
+SMS_BRIDGE_URL=http://127.0.0.1:18180 npm run bridge:health
+npm run bridge:sms:test
+```
+
+Resultados esperados:
+
+- En horario hábil con restricción activa, `npm run bridge:sms:test` devuelve resultados con `ok: false` y mensaje de bloqueo.
+- Fuera de horario hábil, o con `SMS_SEND_ONLY_OUTSIDE_BUSINESS_HOURS=false`, devuelve resultados con `ok: true` si Twilio acepta el envío.
+
 ## Que hace este proyecto
 
 - Recibe alertas por HTTP en `/sms`.
@@ -164,7 +196,7 @@ SMS_SEND_ONLY_OUTSIDE_BUSINESS_HOURS=true
 
 - Edita el `.env` del ambiente donde corre el servicio.
 - Reinicia el servicio para recargar variables.
-- Genera un evento de prueba desde tu flujo normal de desarrollo o desde la herramienta que ya usas.
+- Genera un evento de prueba desde tu flujo normal de desarrollo o con `npm run bridge:sms:test`.
 - Revisa `sms-audit.log`.
 
 Resultado esperado:

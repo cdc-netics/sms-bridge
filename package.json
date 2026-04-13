@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "bridge:health": "node scripts/bridge-cli.js health",
+    "bridge:sms:test": "node scripts/bridge-cli.js send-test"
   },
   "keywords": [],
   "author": "",

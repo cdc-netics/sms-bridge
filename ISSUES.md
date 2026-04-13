@@ -19,6 +19,7 @@ Estado actual:
 | SMS-006 | Bridge | Resuelto | Deduplicacion | Sin control de eventos duplicados | Implementado en v1.3.0: Ventana de 5 min por contenido idéntico |
 | SMS-007 | Bridge | **Resuelto** | Calendario | Envio de SMS durante horario habil y sin manejo de feriados | Implementado en v1.4.0-1.4.1: Control por zona horaria, tiempo, días y feriados con caché de performance |
 | SMS-008 | Bridge | **Resuelto** | Calendario | Falta recordatorio preventivo para cargar feriados del ano siguiente | Implementado en v1.4.0-1.4.1: Recordatorio automático del 25-31 de diciembre, sin race condition |
+| SMS-009 | Bridge | **Resuelto** | Calendario | Evaluación de horario hábil falla en runtime y deriva en intentos de envío fuera de política | Corregido en v1.4.2: se elimina uso inválido de `Intl.DateTimeFormat` con `weekday: 'numeric'` y se calcula el día desde la fecha local, recuperando el registro `BUSINESS_HOURS_BLOCK` en `sms-audit.log` |
 
 ## Como se puede solucionar
 
@@ -200,6 +201,28 @@ Bridge (debe defenderse):
 - Formato YYYY-MM-DD validado con regex `/^\d{4}-\d{2}-\d{2}$/`
 - Líneas vacías ignoradas en archivo de feriados
 - Fallback a fecha UTC si hay error de zona horaria
+
+---
+
+### SMS-009: Falla de runtime en validación de horario hábil
+
+**RESUELTO en v1.4.2**
+
+#### Problema detectado:
+- `isBusinessHours()` intentaba obtener el día local con `Intl.DateTimeFormat(..., { weekday: 'numeric' })`
+- En Node.js esa opción no es válida para `weekday`, generando el error `Value numeric out of range for Intl.DateTimeFormat options property weekday`
+- Al caer al `catch`, la función retornaba `false`, por lo que el bridge seguía intentando enviar SMS en horario hábil
+- El síntoma visible en `systemctl status` parecía error de programación, mientras que en `sms-audit.log` no aparecía `BUSINESS_HOURS_BLOCK`
+
+#### Solución aplicada:
+- Se eliminó la dependencia de `Intl` para calcular el día de semana
+- Nuevo helper `getDayOfWeekFromDateString(dateStr)` calcula `0-6` a partir de la fecha local `YYYY-MM-DD`
+- `isBusinessHours()` ahora usa esa fecha local para validar feriado, día hábil y rango horario sin lanzar error
+
+#### Resultado esperado:
+- Si el mensaje cae en horario hábil configurado, se registra `BUSINESS_HOURS_BLOCK` en `sms-audit.log`
+- Desaparece el mensaje `Error verificando horario hábil...` del journal asociado a esta causa
+- El bridge deja de intentar envíos que deberían quedar bloqueados por política
 
 ---
 

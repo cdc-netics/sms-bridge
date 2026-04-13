@@ -2,15 +2,42 @@
 
 Este archivo registra cambios reales del proyecto por version.
 
+## v1.4.3 - 2026-04-13
+
+### Added
+
+- Comando de proyecto `npm run bridge:health` para validar el endpoint `/health` sin depender de `curl`.
+- Comando de proyecto `npm run bridge:sms:test -- --to <numero>` para probar el flujo real de envío HTTP del bridge sin depender de `curl` o `node -e`.
+- Nuevo archivo `scripts/bridge-cli.js` como interfaz CLI mínima para smoke tests operativos del servicio.
+- `npm run bridge:sms:test` ahora puede tomar destinatarios automáticamente desde `SMS_TEST_TO` o `TWILIO_TO1..TWILIO_TOn` definidos en `.env`.
+
+### Docs
+
+- README actualizado con ejemplos de uso de los nuevos comandos de prueba propios del proyecto.
+
+## v1.4.2 - 2026-04-13
+
+### Fixed
+
+- **[SMS-009] Validación de día hábil en runtime**: `isBusinessHours()` usaba `Intl.DateTimeFormat` con `weekday: 'numeric'`, opción inválida en Node.js. Eso disparaba `Error verificando horario hábil`, hacía que la validación retornara `false` y permitía intentos de envío que debían quedar bloqueados.
+- **[SMS-009] Recuperación de auditoría funcional**: al corregir el cálculo del día de semana, los eventos en horario hábil vuelven a registrar `BUSINESS_HOURS_BLOCK` en `sms-audit.log` en lugar de terminar como intentos de envío y errores secundarios de Twilio.
+
+### Changed
+
+- Nuevo helper `getDayOfWeekFromDateString()` para calcular el día local `0-6` desde la fecha `YYYY-MM-DD` ya resuelta en la timezone configurada.
+- `isBusinessHours()` ahora valida calendario laboral sin depender de `Intl` para el día de la semana, evitando ruido engañoso en `systemctl` y respetando la política horaria configurada.
+
 ## v1.4.1 - 2026-04-02
 
 ### Fixed
+
 - **[SMS-007] Race Condition (Recordatorio Feriados)**: Se marcaba el recordatorio DESPUÉS de enviarlo en background, permitiendo múltiples recordatorios en cascada. Ahora se marca ANTES del `setImmediate()` para garantizar una sola llamada por día.
 - **[SMS-007] Validación segura en getLocalDateString()**: Los accesos a parts encontrados en `formatToParts()` carecían de validación, causan TypeError en algunas timezones. Ahora usa optional chaining `?.value` y verificación explícita.
 - **[SMS-007] Lectura repetida de disco (Performance Critical)**: Cada evento SMS leía el archivo de feriados del disco (5-10ms por evento). Implementado sistema de caché en memoria `holidaysCache` por año. **Mejora: 100x más rápido** (0.5ms vs 5-10ms). Con 10K eventos/día.
 - **[SMS-007] Configuración inválida sin validación**: No se validaban las variables de entorno `BUSINESS_HOURS_START/END` (podía causar comportamiento impredecible). Ahora existe `validateBusinessConfig()` que corre en startup y detiene el servidor si hay errores de configuración (fail-fast).
 
 ### Changed
+
 - Función `isBusinessHours()` ahora usa caché de feriados (`getHolidaysWithCache()`) en lugar de lectura directa.
 - Variables de entorno de horario hábil ahora validadas en startup con regex HH:MM y rango 0-23:00-59.
 

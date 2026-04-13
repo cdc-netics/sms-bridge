@@ -27,6 +27,39 @@ const TWILIO_FROM = (process.env.TWILIO_FROM || '').trim();
 // SISTEMA DE AUDITORÍA (LOG EN ARCHIVO)
 // =========================================================================
 const LOG_FILE = path.join(__dirname, 'sms-audit.log');
+const RAW_LOG_FILE = path.join(__dirname, 'sms-raw.log');
+const RAW_LOG_ENABLED = (process.env.SMS_RAW_LOG || '').toLowerCase() === 'true';
+const RAW_LOG_MAX_LINES = parseInt(process.env.SMS_RAW_LOG_MAX_LINES, 10) || 5000;
+
+function writeRawLog(channel, rawPayload, meta) {
+  if (!RAW_LOG_ENABLED) return;
+  try {
+    const timestamp = new Date().toISOString().replace('T', ' ').split('.')[0];
+    const payload = typeof rawPayload === 'string' ? rawPayload : JSON.stringify(rawPayload);
+    const metaStr = meta ? ` [${meta}]` : '';
+    const newLine = `[${timestamp}] [${channel.padEnd(8)}]${metaStr} ${payload}`;
+
+    // Leer archivo existente y aplicar límite de líneas
+    let lines = [];
+    try {
+      const existing = fs.readFileSync(RAW_LOG_FILE, 'utf8');
+      lines = existing.split('\n').filter(l => l.length > 0);
+    } catch (_) {
+      // Archivo no existe aún, se crea en el primer registro
+    }
+
+    if (lines.length >= RAW_LOG_MAX_LINES) {
+      lines.splice(0, lines.length - (RAW_LOG_MAX_LINES - 1));
+    }
+    lines.push(newLine);
+
+    fs.writeFile(RAW_LOG_FILE, lines.join('\n') + '\n', (err) => {
+      if (err) console.error('Error escribiendo en sms-raw.log:', err.message);
+    });
+  } catch (e) {
+    console.error('Error en writeRawLog:', e.message);
+  }
+}
 
 function writeAuditLog(status, to, body) {
   try {
@@ -195,18 +228,25 @@ function getLocalTimeString(timezone = BUSINESS_TIMEZONE) {
 }
 
 /**
+ * Obtiene el día de la semana local (0=domingo, 6=sábado) desde una fecha YYYY-MM-DD
+ */
+function getDayOfWeekFromDateString(dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  if (!year || !month || !day) {
+    throw new Error(`Fecha inválida para calcular día de semana: ${dateStr}`);
+  }
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+}
+
+/**
  * Verifica si la hora actual es horario hábil (SMS-007)
  * Retorna true si es horario hábil (bloquear), false si está fuera (permitir)
  */
 function isBusinessHours() {
   if (!SMS_SEND_ONLY_OUTSIDE_BUSINESS_HOURS) return false;
   try {
-    const formatter = new Intl.DateTimeFormat('es-CL', {
-      weekday: 'numeric', timeZone: BUSINESS_TIMEZONE
-    });
-    const intlDay = parseInt(formatter.format(new Date()));
-    const dayOfWeek = intlDay === 7 ? 0 : intlDay;
     const dateStr = getLocalDateString();
+    const dayOfWeek = getDayOfWeekFromDateString(dateStr);
     const currentYear = parseInt(dateStr.split('-')[0]);
     const holidays = getHolidaysWithCache(currentYear); // ← Usa caché
     if (holidays.has(dateStr)) return false;
@@ -294,6 +334,7 @@ app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 app.post('/sms', async (req, res) => {
   try {
+    writeRawLog('HTTP', req.body || {}, `from=${req.ip}`);
     let { to, body } = req.body || {};
 
     // Fix SMS-001 (Null strings)
@@ -389,6 +430,7 @@ udpServer.on('message', async (msg, rinfo) => {
   try {
     let log = msg.toString();
     if (!log) return;
+    writeRawLog('UDP', log, `from=${rinfo.address}:${rinfo.port}`);
 
     // Fix SMS-001
     log = log.replace(/\bnull\b/ig, '[sin descripción]');
