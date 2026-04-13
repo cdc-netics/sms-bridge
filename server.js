@@ -31,10 +31,18 @@ const RAW_LOG_FILE = path.join(__dirname, 'sms-raw.log');
 const RAW_LOG_ENABLED = (process.env.SMS_RAW_LOG || '').toLowerCase() === 'true';
 const RAW_LOG_MAX_LINES = parseInt(process.env.SMS_RAW_LOG_MAX_LINES, 10) || 5000;
 
+function getLogTimestamp(timezone = (process.env.BUSINESS_TIMEZONE || 'America/Santiago').trim()) {
+  try {
+    return `${getLocalDateString(timezone)} ${getLocalTimeString(timezone)}`;
+  } catch (_err) {
+    return new Date().toISOString().replace('T', ' ').split('.')[0];
+  }
+}
+
 function writeRawLog(channel, rawPayload, meta) {
   if (!RAW_LOG_ENABLED) return;
   try {
-    const timestamp = new Date().toISOString().replace('T', ' ').split('.')[0];
+    const timestamp = getLogTimestamp();
     const payload = typeof rawPayload === 'string' ? rawPayload : JSON.stringify(rawPayload);
     const metaStr = meta ? ` [${meta}]` : '';
     const newLine = `[${timestamp}] [${channel.padEnd(8)}]${metaStr} ${payload}`;
@@ -63,7 +71,7 @@ function writeRawLog(channel, rawPayload, meta) {
 
 function writeAuditLog(status, to, body) {
   try {
-    const timestamp = new Date().toISOString().replace('T', ' ').split('.')[0];
+    const timestamp = getLogTimestamp();
     const cleanBody = (body || '').replace(/\n|\r/g, ' ').substring(0, 50);
     const logLine = `[${timestamp}] [${status.padEnd(12)}] [TO: ${to.padEnd(15)}] [MSG: ${cleanBody}...]\n`;
     fs.appendFile(LOG_FILE, logLine, (err) => {
@@ -72,6 +80,16 @@ function writeAuditLog(status, to, body) {
   } catch (e) {
     console.error('Error en el sistema de auditoría:', e.message);
   }
+}
+
+function buildTwilioAuditMessage(message, fallbackBody) {
+  const parts = [];
+  if (message?.sid) parts.push(`sid=${message.sid}`);
+  if (message?.status) parts.push(`status=${message.status}`);
+  if (message?.errorCode) parts.push(`errorCode=${message.errorCode}`);
+  if (message?.errorMessage) parts.push(`errorMessage=${message.errorMessage}`);
+  parts.push(`body=${fallbackBody}`);
+  return parts.join(' | ');
 }
 
 // =========================================================================
@@ -367,13 +385,14 @@ app.post('/sms', async (req, res) => {
     // --- TRUNCAMIENTO INTELIGENTE (SMS-005) ---
     const finalBody = smartTruncate(body);
 
-    await client.messages.create({ 
+    const message = await client.messages.create({ 
       to: to,               
       from: TWILIO_FROM,    
       body: finalBody            
     });
     
-    writeAuditLog('SENT_OK', to, finalBody);
+    writeAuditLog('SENT_OK', to, buildTwilioAuditMessage(message, finalBody));
+    console.log(`Twilio HTTP create ok para ${to}: sid=${message.sid} status=${message.status}`);
     
     // --- RECORDATORIO DE FERIADOS (SMS-008) ---
     // Ejecutar en background sin bloquear la respuesta
@@ -456,13 +475,13 @@ udpServer.on('message', async (msg, rinfo) => {
       const finalLog = smartTruncate(log);
 
       try {
-        await client.messages.create({
+        const message = await client.messages.create({
           to,
           from: TWILIO_FROM,
           body: finalLog
         });
-        console.log(`Mensaje UDP OK a ${to}`);
-        writeAuditLog('SENT_UDP', to, finalLog);
+        console.log(`Twilio UDP create ok a ${to}: sid=${message.sid} status=${message.status}`);
+        writeAuditLog('SENT_UDP', to, buildTwilioAuditMessage(message, finalLog));
         
         // --- RECORDATORIO DE FERIADOS (SMS-008) ---
         // Ejecutar en background sin bloquear otros envíos
